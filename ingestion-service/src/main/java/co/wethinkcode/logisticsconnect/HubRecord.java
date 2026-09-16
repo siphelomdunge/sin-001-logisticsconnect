@@ -2,7 +2,7 @@ package co.wethinkcode.logisticsconnect;
 
 public record HubRecord(
         String hubId,
-        String province,
-        String sortingCenter,
-        String active
+        String province,  // null if missing
+        String sortingCenter,  // null if missing
+        Boolean active  // null if missing/unparseable - true "unknown" state
 ){}
