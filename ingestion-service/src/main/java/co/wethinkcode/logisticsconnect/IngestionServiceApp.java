@@ -77,7 +77,9 @@ public class IngestionServiceApp {
 
         for (HubRecord r : records) {
             // No sortingCenter to group on -> keep it standalone, keyed by its own hubId.
-            String key = (r.sortingCenter() != null) ? r.sortingCenter() : "__no-center__" + r.hubId();
+            String key = (r.sortingCenter() != null)
+                    ? r.sortingCenter().toLowerCase() // normalize case so "johannesburg central"
+                    : "__no-center__" + r.hubId();    // groups with "Johannesburg Central"
             groups.computeIfAbsent(key, k -> new ArrayList<>()).add(r);
         }
 
@@ -102,6 +104,13 @@ public class IngestionServiceApp {
                     .filter(Objects::nonNull)
                     .findFirst()
                     .orElse(null);
+
+            //Prefer the properly title-cased spelling for the display name,
+            //instead of whichever row happened to be inserted first.
+            String canonicalSortingCenter = group.stream()
+                    .map(HubRecord::sortingCenter)
+                    .max(Comparator.comparing(s -> (int) s.chars().filter(Character::isUpperCase).count()))
+                    .orElseThrow();
 
             //Any true wins: one working record is trusted over conflicting down-flags
             Boolean canonicalActive = group.stream().anyMatch(hr -> Boolean.TRUE.equals(hr.active()))
@@ -141,7 +150,7 @@ public class IngestionServiceApp {
     // Trims and collapses internal double-space
     static String cleanText(String s) {
         if (s == null) return null;
-        return s.trim().replace("\\s+" , " ");
+        return s.trim().replaceAll("\\s+", " ");
     }
 
     //Hub IDs: uppercase, trimmed. "h-501 " -> "H-501"
