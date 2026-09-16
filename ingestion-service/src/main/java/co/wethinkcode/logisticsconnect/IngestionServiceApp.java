@@ -5,10 +5,7 @@ import io.javalin.Javalin;
 
 import java.io.InputStream;
 import java.io.InputStreamReader;
-import java.util.ArrayList;
-import java.util.List;
-import java.util.Locale;
-import java.util.Set;
+import java.util.*;
 
 public class IngestionServiceApp {
 
@@ -23,16 +20,20 @@ public class IngestionServiceApp {
             Set.of("n", "no", "false", "0");
 
     public static void main(String[] args) throws Exception {
-        List<HubRecord> cleaned = loadAndClean();
-
-        Javalin app = Javalin.create().start(7050);
-        app.get("/health", ctx -> ctx.result("OK"));
 
         // TODO: read and clean src/main/resources/hubs-global.csv (hubs, sorting centers, regional districts data —
         // trim whitespace, fix casing, normalize dates/booleans) and expose the
         // cleaned records here for the other services to consume.
 
-        cleaned.forEach(System.out::println);
+        List<HubRecord> cleaned = dedupe(loadAndClean());
+
+        Javalin app = Javalin.create().start(7050);
+        app.get("/health", ctx -> ctx.result("OK"));
+
+        // Stage 1 done: cleaned + deduped hub data, available to every other service
+        app.get("/hubs", ctx -> ctx.json(cleaned));
+
+        System.out.println("ingestion-service ready on :7050 with " + cleaned.size() + " hubs");
     }
 
     static List<HubRecord> loadAndClean() throws Exception {
@@ -67,6 +68,51 @@ public class IngestionServiceApp {
         return records;
     }
 
+
+    // Groups records that share a sortingCenter (the one field that stays consistent
+    // across duplicates even when province formatting or hubId doesn't) and merges
+    // each group into a single canonical HubRecord.
+    static List<HubRecord> dedupe(List<HubRecord> records) {
+        LinkedHashMap<String, List<HubRecord>> groups = new LinkedHashMap<>();
+
+        for (HubRecord r : records) {
+            // No sortingCenter to group on -> keep it standalone, keyed by its own hubId.
+            String key = (r.sortingCenter() != null) ? r.sortingCenter() : "__no-center__" + r.hubId();
+            groups.computeIfAbsent(key, k -> new ArrayList<>()).add(r);
+        }
+
+        List<HubRecord> merged = new ArrayList<>();
+        for (List<HubRecord> group : groups.values()) {
+            if (group.size() == 1) {
+                merged.add(group.get(0));
+                continue;
+            }
+
+            System.out.println("Merging " + group.size() + " duplicate rows for \""
+                    + group.get(0).sortingCenter() + "\" : "
+                    + group.stream().map(HubRecord::hubId).toList());
+
+            String canonicalId = group.stream()
+                    .map(HubRecord::hubId)
+                    .min(Comparator.naturalOrder())
+                    .orElseThrow();
+
+            String canonicalProvince = group.stream()
+                    .map(HubRecord::province)
+                    .filter(Objects::nonNull)
+                    .findFirst()
+                    .orElse(null);
+
+            //Any true wins: one working record is trusted over conflicting down-flags
+            Boolean canonicalActive = group.stream().anyMatch(hr -> Boolean.TRUE.equals(hr.active()))
+                    ? Boolean.TRUE
+                    : group.stream().allMatch(hr -> hr.active() == null) ? null : Boolean.FALSE;
+
+            merged.add(new HubRecord(canonicalId, canonicalProvince, group.get(0).sortingCenter(), canonicalActive));
+        }
+
+        return merged;
+    }
 
     // Cleans text, applies title-casing if requested, and converts missing tokens to null
     static String cleanOrNull(String raw, boolean titleCase) {
