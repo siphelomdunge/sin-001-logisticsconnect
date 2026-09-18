@@ -1,5 +1,6 @@
 package co.wethinkcode.logisticsconnect;
 
+import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.javalin.Javalin;
 import io.javalin.http.HttpStatus;
@@ -9,7 +10,9 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.time.Duration;
+import java.util.List;
 import java.util.Map;
+import java.util.stream.Collectors;
 
 public class HubServiceApp {
 
@@ -17,7 +20,7 @@ public class HubServiceApp {
     private static final int MAX_ATTEMPTS = 5;
     private static final long RETRY_DELAY_MS = 1000;
 
-    public static void main(String[] args) {
+    public static void main(String[] args) throws Exception{
         Map<String, HubRecord> hubsById = fetchHubsWithRetry();
 
         Javalin app = Javalin.create().start(7051);
@@ -58,9 +61,31 @@ public class HubServiceApp {
         Exception lastError = null;
         for (int attempt = 1;attempt <= MAX_ATTEMPTS; attempt++) {
             try {
-                HttpResponse<String> response response
+                HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString());
+
+                if (response.statusCode() != 200) {
+                    throw new Exception("ingestion-service returned HTTP " + response.statusCode());
+                }
+
+                List<HubRecord> hubs = mapper.readValue(response.body(), new TypeReference<List<HubRecord>>() {});
+
+                return hubs.stream().collect(Collectors.toMap(HubRecord::hubId, h -> h));
+
+            } catch (Exception e) {
+                lastError = e;
+                System.out.println("Attempt " + attempt + "/" + MAX_ATTEMPTS
+                        + " to reach ingestion-service failed: " + e.getMessage());
+                if (attempt < MAX_ATTEMPTS) {
+                    Thread.sleep(RETRY_DELAY_MS);
+                }
             }
         }
+
+        throw  new RuntimeException(
+                "Could not load hubs from ingestion-service at " + INGESTION_URL
+                        + " after " + MAX_ATTEMPTS + " attempts. Is it running om :7050",
+                lastError
+        );
     }
 }
 
