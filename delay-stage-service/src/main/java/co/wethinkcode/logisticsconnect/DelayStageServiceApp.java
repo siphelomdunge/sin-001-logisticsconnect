@@ -1,9 +1,13 @@
 package co.wethinkcode.logisticsconnect;
 
+import co.wethinkcode.logisticsconnect.mq.MqConfig;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import io.javalin.Javalin;
 import io.javalin.http.HttpStatus;
+import org.apache.activemq.ActiveMQConnection;
+import org.apache.activemq.ActiveMQConnectionFactory;
 
-import java.awt.desktop.PreferencesEvent;
+import javax.jms.*;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -16,8 +20,16 @@ public class DelayStageServiceApp {
     //hubId -> current delay stage. ConcurrentHashMap because multiple
     // requests can read/write this at the same time.
     private static final Map<String, Integer> delayStages = new ConcurrentHashMap<>();
+    private static final ObjectMapper maper = new ObjectMapper();
 
-    public static void main(String[] args) {
+    //JMS resources - created once at startup, reused for every publish
+    private static Connection mqConnection;
+    private static Session mqSession;
+    private static MessageProducer mqProducer;
+
+    public static void main(String[] args) throws Exception{
+        setupMq();
+
         Javalin app = Javalin.create().start(7052);
 
         app.get("/health", ctx -> ctx.result("OK"));
@@ -55,10 +67,46 @@ public class DelayStageServiceApp {
 
             // MQ TODO (Day 7): publish this change to MqConfig.TOPIC instead of
             // (or as well as) just storing it here, to transit-service can react
+            publishStageChange(hubId, body.stage());
+
+
             ctx.json(Map.of("hubId", hubId ,"stage", body.stage()));
         });
 
+        Runtime.getRuntime().addShutdownHook(new Thread(DelayStageServiceApp::teardownMq));
+
         System.out.println("delay-stage-service ready on :7052");
+    }
+
+    static void setupMq() throws JMSException {
+        ActiveMQConnectionFactory factory = new ActiveMQConnectionFactory(MqConfig.BROKER_URL);
+        mqConnection = factory.createConnection();
+        mqConnection.start();
+        mqSession = mqConnection.createSession(false, Session.AUTO_ACKNOWLEDGE);
+        Topic topic = mqSession.createTopic(MqConfig.TOPIC);
+        mqProducer = mqSession.createProducer(topic);
+        System.out.println("Connected to broker at " + MqConfig.BROKER_URL + ", publishing to topic \"" + MqConfig.TOPIC + "\"");
+    }
+
+    static void publishStageChange(String hubId, int stage) {
+        try {
+            String json = maper.writeValueAsString(new DelayStageEvent(hubId, stage));
+            TextMessage message = mqSession.createTextMessage(json);
+            mqProducer.send(message);
+            System.out.println("Published to " + MqConfig.TOPIC + ": " + json);
+        }catch (Exception e) {
+            // A failed publish shouldn't break the REST response - the stage
+            // update itself already succeeded and is stored above.
+            System.err.println("Failed to publish stage change: " + e.getMessage());
+        }
+    }
+
+    static void teardownMq() {
+        try {
+            if (mqConnection != null) mqConnection.close();
+        } catch (JMSException e) {
+            System.out.println("Error closing MQ connection: " + e.getMessage());
+        }
     }
 }
 
