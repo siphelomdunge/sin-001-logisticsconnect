@@ -55,7 +55,7 @@ public class DelayStageServiceApp {
                 return;
             }
 
-            if (body.stage() < MIN_STAGE || body.stage() > MAX_STAGE) {
+            if (!isValidStage(body.stage())) {
                 ctx.status(HttpStatus.BAD_REQUEST).json(Map.of(
                         "error", "stage must be between " + MIN_STAGE + " and " + MAX_STAGE
                 ));
@@ -107,6 +107,10 @@ public class DelayStageServiceApp {
         } catch (JMSException e) {
             System.out.println("Error closing MQ connection: " + e.getMessage());
         }
+    }
+
+    static boolean isValidStage(int stage) {
+        return stage >= MIN_STAGE && stage <= MAX_STAGE;
     }
 }
 
